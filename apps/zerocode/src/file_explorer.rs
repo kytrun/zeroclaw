@@ -134,6 +134,25 @@ impl FileExplorerState {
         self.entries.clear();
         self.error = None;
 
+        // Windows: empty cwd means "My Computer" drive listing mode.
+        // Lists all available drives so the user can switch between them.
+        #[cfg(windows)]
+        if self.cwd.as_os_str().is_empty() {
+            for letter in 'A'..='Z' {
+                let path = PathBuf::from(format!("{letter}:\\"));
+                if path.exists() {
+                    self.entries.push(ExplorerEntry {
+                        name: format!("{letter}:\\"),
+                        is_dir: true,
+                        size: 0,
+                        _is_hidden: false,
+                        full_path: path,
+                    });
+                }
+            }
+            return;
+        }
+
         if let Some(rpc) = &self.remote_rpc {
             // Wire up remote fs/list_dir (WSS ACP case)
             let path = self.cwd.to_string_lossy().to_string();
@@ -350,6 +369,33 @@ impl FileExplorerState {
                 ExplorerAction::None
             }
             Some(FileExplorerAction::LeaveDir) => {
+                // On Windows: when at a drive root (C:\), navigate to the
+                // "My Computer" drive listing view so the user can switch
+                // to another drive (D:\, E:\, etc.).
+                #[cfg(windows)]
+                if self.cwd.as_os_str().is_empty() {
+                    return ExplorerAction::None;
+                }
+                #[cfg(windows)]
+                {
+                    let s = self.cwd.to_string_lossy();
+                    if s.len() == 3
+                        && s.as_bytes().get(1) == Some(&b':')
+                        && s.as_bytes().get(2) == Some(&b'\\')
+                        && s.as_bytes().get(0).map_or(false, |b| b.is_ascii_alphabetic())
+                    {
+                        self.cwd = PathBuf::new();
+                        self.search_query.clear();
+                        self.load_entries();
+                        self.list_state.select(if self.entries.is_empty() {
+                            None
+                        } else {
+                            Some(0)
+                        });
+                        return ExplorerAction::None;
+                    }
+                }
+
                 if let Some(parent) = self.cwd.parent() {
                     let prev = self.cwd.clone();
                     self.cwd = parent.to_path_buf();
@@ -512,7 +558,11 @@ impl FileExplorerState {
         f.render_widget(Clear, overlay_area);
 
         // Title: current path.
-        let cwd_display = self.cwd.display().to_string();
+        let cwd_display = if self.cwd.as_os_str().is_empty() {
+            "My Computer".to_string()
+        } else {
+            self.cwd.display().to_string()
+        };
         let title = if cwd_display.len() > 50 {
             format!(" ...{} ", &cwd_display[cwd_display.len() - 47..])
         } else {
